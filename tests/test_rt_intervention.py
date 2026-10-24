@@ -197,7 +197,8 @@ def test_toggle_changes_behaviour_via_buffer():
 
     R._DIRS.clear(); R._DIRS[9] = d
     R._ALPHA_BUF.clear()
-    R._STATE.update({"enabled": True, "alpha": 0.0, "toggle_path": None})
+    R._LAYER_ALPHA_BUF.clear()
+    R._STATE.update({"enabled": True, "alpha": 0.0, "toggle_path": None, "per_layer": None})
 
     hook = R._make_hook(9)
     y = torch.randn(2, D)
@@ -232,6 +233,143 @@ def test_alpha_clamp():
     print(f"  [ok] alpha clamped to [0.0, {R.ALPHA_MAX}] (ceiling is operator-set)")
 
 
+
+# ---------------------------------------------------------------------------
+# Hybrid-surface tests.
+#
+# These exist because the shipped hook hardcoded `self_attn.o_proj`. On a hybrid
+# architecture (Qwen3.5-MoE / Sage-A1.5) that binds 11 of 41 matrices and skips
+# the other 30 SILENTLY — the run reports success and describes the wrong model.
+# A surface-coverage assertion is the only thing that catches it.
+# ---------------------------------------------------------------------------
+
+
+class _FakeProj(torch.nn.Module):
+    """Stand-in for a projection layer that returns a tuple, like real ones do."""
+
+    def __init__(self, d):
+        super().__init__()
+        self.flag = torch.zeros((), dtype=torch.bool)
+        self.calls = 0
+
+    def forward(self, x):
+        self.calls += 1
+        return (x, None)
+
+
+class _FakeAttn(torch.nn.Module):
+    def __init__(self, kind, d):
+        super().__init__()
+        self.kind = kind
+        # Dense attention exposes o_proj; linear attention exposes out_proj.
+        if kind == "self_attn":
+            self.o_proj = _FakeProj(d)
+        else:
+            self.out_proj = _FakeProj(d)
+
+
+class _HybridLayer(torch.nn.Module):
+    """A decoder layer carrying BOTH surface kinds, like Qwen3.5-MoE."""
+
+    def __init__(self, layer_id, d=8, hybrid=True):
+        super().__init__()
+        self.layer_id = layer_id
+        self.self_attn = _FakeAttn("self_attn", d)
+        if hybrid:
+            self.linear_attn = _FakeAttn("linear_attn", d)
+
+
+def test_hybrid_surfaces_all_bind():
+    """Every configured surface must bind — no silent skips on a hybrid layer."""
+    import rt_intervention as R
+
+    d = 8
+    layer = _HybridLayer(0, d=d, hybrid=True)
+    hits = []
+
+    for attn_attr, proj_attr in R._DEFAULT_SURFACES:
+        attn = getattr(layer, attn_attr, None)
+        assert attn is not None, f"hybrid layer missing {attn_attr}"
+        proj = getattr(attn, proj_attr, None)
+        assert proj is not None, f"hybrid layer missing {attn_attr}.{proj_attr}"
+        proj.register_forward_hook(lambda m, i, o, _a=attn_attr: hits.append(_a))
+
+    x = torch.randn(2, 3, d)
+    for attn_attr, _ in R._DEFAULT_SURFACES:
+        getattr(layer, attn_attr)
+        proj = getattr(getattr(layer, attn_attr), "o_proj", None) or getattr(
+            getattr(layer, attn_attr), "out_proj"
+        )
+        proj(x)
+
+    assert set(hits) == {"self_attn", "linear_attn"}, (
+        f"expected both surfaces to fire, got {hits}"
+    )
+
+
+def test_dense_model_does_not_require_linear_attn():
+    """A dense layer must bind self_attn and skip linear_attn without erroring."""
+    import rt_intervention as R
+
+    layer = _HybridLayer(0, d=8, hybrid=False)
+    bound = 0
+    for attn_attr, proj_attr in R._DEFAULT_SURFACES:
+        attn = getattr(layer, attn_attr, None)
+        if attn is None:
+            continue  # dense model: linear_attn genuinely absent
+        proj = getattr(attn, proj_attr, None)
+        if proj is None:
+            continue
+        bound += 1
+    assert bound == 1, f"dense layer should bind exactly 1 surface, bound {bound}"
+
+
+def test_per_layer_alpha_vector_applies_independently():
+    """Per-layer alpha must differ by layer — one global value is the old bug."""
+    import rt_intervention as R
+
+    d = 8
+    R._LAYER_ALPHA_BUF.clear()
+    R._STATE["enabled"] = True
+    R._STATE["alpha"] = 1.0
+    R._STATE["n_layers"] = 4
+
+    R._push_layer_alpha([0.0, 0.5, 1.0, 2.0])
+
+    y = torch.ones(1, 1, d)
+    dvec = torch.zeros(d)
+    dvec[0] = 1.0
+
+    outs = []
+    for lid in range(4):
+        out = R._edit(y, dvec, lid)
+        outs.append(float(out[0, 0, 0]))
+
+    # y=1, d=e0 => y - a*(1)*e0 => component0 = 1 - a
+    for lid, expected in enumerate([1.0, 0.5, 0.0, -1.0]):
+        assert abs(outs[lid] - expected) < 1e-5, (
+            f"layer {lid}: expected {expected}, got {outs[lid]} (per-layer alpha not applied)"
+        )
+
+
+def test_per_layer_alpha_clamped_and_off_is_identity():
+    """enabled=false must zero every layer; values clamp to ALPHA_MAX."""
+    import rt_intervention as R
+
+    R._LAYER_ALPHA_BUF.clear()
+    R._STATE["enabled"] = False
+    R._STATE["alpha"] = 0.0
+    R._STATE["n_layers"] = 2
+    R._push_layer_alpha([1.0, 1.0])
+
+    y = torch.ones(1, 1, 4)
+    dvec = torch.zeros(4)
+    dvec[0] = 1.0
+    out = R._edit(y, dvec, 0)
+    assert torch.allclose(out, y), "disabled intervention must be the identity"
+
+    assert R._clamp_alpha(99.0, "test") <= R.ALPHA_MAX + 1e-9
+
 if __name__ == "__main__":
     print("rt_intervention unit tests")
     print("-" * 56)
@@ -240,6 +378,10 @@ if __name__ == "__main__":
         test_tp_linearity,
         test_alpha_semantics,
         test_alpha_clamp,
+        test_hybrid_surfaces_all_bind,
+        test_dense_model_does_not_require_linear_attn,
+        test_per_layer_alpha_vector_applies_independently,
+        test_per_layer_alpha_clamped_and_off_is_identity,
         test_tuple_return_shape,
         test_toggle_changes_behaviour_via_buffer,
         test_layer_fallback,

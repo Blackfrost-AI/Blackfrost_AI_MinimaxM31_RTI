@@ -91,6 +91,12 @@ _DIRS_STAGED: dict[tuple[int, int, torch.dtype], torch.Tensor] = {}
 # a recapture or restart.
 _ALPHA_BUF: dict[int, torch.Tensor] = {}
 
+# Per-layer alpha. Same capture-safety property as _ALPHA_BUF, but one scalar
+# per edited layer instead of one per device. Populated only when the config (or
+# the toggle file) supplies a list; otherwise the global path is used and this
+# stays empty.
+_LAYER_ALPHA_BUF: dict[int, torch.Tensor] = {}
+
 
 def _sha256(path: str) -> str:
     h = hashlib.sha256()
@@ -208,7 +214,7 @@ def _stage(d_ref: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
 
 
 def _alpha_for(y: torch.Tensor) -> torch.Tensor:
-    """Current alpha as a device-resident scalar matching y's dtype.
+    """Current alpha as a device-resident [1] scalar matching y's dtype.
 
     Read from `_ALPHA_BUF` so CUDA-graph replay sees the live value. The cast is
     a device-side op (no CPU sync, no host allocation), so it is capture-safe.
@@ -224,20 +230,80 @@ def _alpha_for(y: torch.Tensor) -> torch.Tensor:
     return buf
 
 
+def _layer_alpha_for(y: torch.Tensor, layer_id: int) -> torch.Tensor:
+    """Per-layer alpha as a device-resident [1] scalar.
+
+    Same capture-safety property as `_alpha_for`: the value lives in device
+    memory and is refreshed by the toggle poller, so CUDA-graph replay always
+    observes the live value rather than a Python scalar baked into the graph.
+
+    Falls back to the global alpha when no per-layer vector is configured, so
+    existing configs keep working unchanged.
+    """
+    key = (y.device.index or 0, y.dtype)
+
+    # Global mode: no per-layer vector configured. Delegate so the global
+    # buffer stays the single source of truth (unchanged behaviour).
+    if not _STATE.get("per_layer"):
+        return _alpha_for(y)
+
+    buf = _LAYER_ALPHA_BUF.get(key)
+    if buf is None:
+        n = _STATE.get("n_layers") or 64
+        vec = torch.zeros(n, device=y.device, dtype=y.dtype)
+        pl = _STATE.get("per_layer")
+        if pl:
+            t = torch.as_tensor(pl, dtype=y.dtype, device=y.device)
+            m = min(n, t.numel())
+            vec[:m] = t[:m]
+        else:
+            vec.fill_(_STATE["alpha"] if _STATE.get("enabled", True) else 0.0)
+        _LAYER_ALPHA_BUF[key] = vec
+        buf = vec
+    if layer_id < buf.numel():
+        return buf[layer_id : layer_id + 1]
+    return _alpha_for(y)
+
+
 def _push_alpha(alpha: float) -> None:
-    """Write alpha into every device buffer (outside capture)."""
+    """Write a global alpha into every device buffer (outside capture).
+
+    Also updates `_STATE` so a buffer created *after* this call seeds correctly.
+    Buffers are created lazily on first forward, so a push that only touched
+    existing buffers would silently no-op on a fresh process.
+    """
+    _STATE["alpha"] = float(alpha)
+    _STATE["per_layer"] = None
     for buf in list(_ALPHA_BUF.values()):
         buf.fill_(float(alpha))
+    for vec in list(_LAYER_ALPHA_BUF.values()):
+        vec.fill_(float(alpha))
 
 
-def _edit(y: torch.Tensor, d_ref: torch.Tensor) -> torch.Tensor:
-    """y <- y - alpha * (y . d) d   (d unit-norm, alpha from device memory).
+def _push_layer_alpha(vec_in) -> None:
+    """Write a per-layer alpha vector into every device buffer (outside capture).
+
+    Same lazy-creation caveat as `_push_alpha`: stash the vector in `_STATE` so
+    buffers created later seed from it rather than from a stale global.
+    """
+    t = torch.as_tensor(vec_in, dtype=torch.float32).flatten()
+    if not _STATE.get("enabled", True):
+        t = torch.zeros_like(t)
+    _STATE["per_layer"] = [float(v) for v in t.tolist()]
+    for key, vec in list(_LAYER_ALPHA_BUF.items()):
+        n = min(vec.numel(), t.numel())
+        if n:
+            vec[:n].copy_(t[:n].to(device=vec.device, dtype=vec.dtype))
+
+
+def _edit(y: torch.Tensor, d_ref: torch.Tensor, layer_id: int) -> torch.Tensor:
+    """y <- y - alpha_l * (y . d) d   (d unit-norm, alpha from device memory).
 
     Unconditional: alpha == 0 is the identity, so there is no Python-level
     branch for the graph to bake in.
     """
     d = _stage(d_ref, y)
-    a = _alpha_for(y)
+    a = _layer_alpha_for(y, layer_id)
     proj = torch.matmul(y, d).unsqueeze(-1)
     return y - a * proj * d
 
@@ -255,9 +321,9 @@ def _make_hook(layer_id: int):
         if isinstance(output, tuple):
             if not output or not isinstance(output[0], torch.Tensor):
                 return output
-            return (_edit(output[0], d_ref),) + tuple(output[1:])
+            return (_edit(output[0], d_ref, layer_id),) + tuple(output[1:])
         if isinstance(output, torch.Tensor):
-            return _edit(output, d_ref)
+            return _edit(output, d_ref, layer_id)
         return output
 
     return hook
@@ -290,43 +356,110 @@ def _toggle_poller() -> None:
                 with open(path) as f:
                     t = json.load(f)
                 on = bool(t.get("enabled", base_on))
-                alpha = _clamp_alpha(float(t.get("alpha", base_alpha)), "toggle")
+                raw = t.get("alpha", base_alpha)
+                if isinstance(raw, (list, tuple)):
+                    # Per-layer vector: clamp elementwise, keep the scalar view
+                    # for logging as the mean.
+                    vec = [
+                        _clamp_alpha(float(v), "toggle") for v in raw
+                    ]
+                    alpha = sum(vec) / len(vec) if vec else 0.0
+                    per_layer = vec
+                else:
+                    alpha = _clamp_alpha(float(raw), "toggle")
+                    per_layer = None
             except Exception:
-                on, alpha = base_on, base_alpha
+                on, alpha, per_layer = base_on, base_alpha, None
 
         eff = alpha if on else 0.0
-        if eff != _STATE["alpha"] or on != _STATE["enabled"]:
+        if eff != _STATE["alpha"] or on != _STATE["enabled"] or per_layer is not None:
             _STATE["alpha"] = eff
             _STATE["enabled"] = on
-            _push_alpha(eff)
+            if per_layer is None:
+                _push_alpha(eff)
+            else:
+                _push_layer_alpha([v if on else 0.0 for v in per_layer])
             logger.warning(
-                "[rt-intervention] toggle -> enabled=%s alpha=%.3f (effective %.3f)",
-                on, alpha, eff,
+                "[rt-intervention] toggle -> enabled=%s alpha=%.3f (effective %.3f)%s",
+                on, alpha, eff, " per-layer" if per_layer is not None else "",
             )
 
 
-def _resolve_backend():
-    """Find (decoder_layer_cls, attn_attr, o_proj_attr) for the active engine.
+# Surfaces to edit, as (attention_attr, projection_attr).
+#
+# Hybrid architectures split attention across two module types. On
+# Qwen3.5-MoE / Sage-A1.5 the real index carries BOTH:
+#     self_attn.o_proj     x 11
+#     linear_attn.out_proj x 30   <- 73% of surfaces
+# A hook that only knows `self_attn.o_proj` binds 11 of 41 matrices and reports
+# success. That is the failure this list exists to prevent.
+_DEFAULT_SURFACES = (
+    ("self_attn", "o_proj"),
+    ("linear_attn", "out_proj"),
+)
 
-    Returns None if no known backend is importable. Each entry is
-    (name, module, class_name, attn_attr). o_proj is always `o_proj`.
+# Known (module, class) targets per engine. `surfaces` is per-entry because a
+# dense model simply has no linear_attn to bind.
+_KNOWN_LAYER_CLASSES = (
+    # sglang — MiniMax-M3.1 verified
+    ("sglang", "sglang.srt.models.minimax_m3", "MiniMaxM3DecoderLayer", (("self_attn", "o_proj"),)),
+    # sglang — Qwen3.5-MoE / Sage-A1.5 (hybrid: dense + linear attention)
+    ("sglang", "sglang.srt.models.qwen3_5_moe", "Qwen3_5MoeDecoderLayer", _DEFAULT_SURFACES),
+    ("sglang", "sglang.srt.models.qwen3_5", "Qwen3_5DecoderLayer", _DEFAULT_SURFACES),
+    # vLLM — UNTESTED
+    ("vllm", "vllm.model_executor.models.minimax_m3", "MiniMaxM3DecoderLayer", (("self_attn", "o_proj"),)),
+    ("vllm", "vllm.model_executor.models.minimax_vl", "MiniMaxTextDecoderLayer", (("self_attn", "o_proj"),)),
+)
+
+
+def _import_layer_class(spec: str):
+    """Resolve 'module:ClassName' to a class, or None."""
+    if ":" not in spec:
+        return None
+    mod_path, cls_name = spec.split(":", 1)
+    try:
+        import importlib
+
+        mod = importlib.import_module(mod_path.strip())
+    except Exception as e:
+        logger.warning("[rt-intervention] layer_class import failed (%s): %s", spec, e)
+        return None
+    return getattr(mod, cls_name.strip(), None)
+
+
+def _resolve_backend(cfg=None):
+    """Resolve (engine_name, decoder_layer_cls, surfaces) for the active model.
+
+    `surfaces` is a tuple of (attn_attr, proj_attr). Returns None if nothing
+    importable matched.
+
+    Order:
+      1. explicit `layer_class` in config or BLACKFROST_RT_LAYER_CLASS env
+      2. known per-engine classes
     """
+    cfg = cfg or {}
     pin = os.environ.get("BLACKFROST_RT_BACKEND", "").strip().lower()
+    surfaces = tuple(
+        tuple(s) for s in cfg.get("surfaces", _DEFAULT_SURFACES)
+    )
 
-    candidates = [
-        # sglang — VERIFIED. Real text model lives in minimax_m3; the _vl module
-        # is a wrapper that ultimately builds these layers.
-        ("sglang", "sglang.srt.models.minimax_m3", "MiniMaxM3DecoderLayer", "self_attn"),
-        # vLLM — UNTESTED. vLLM names its decoder layer differently per model.
-        # These are the plausible targets; the first importable one is used only
-        # if sglang is absent or the operator pins it.
-        ("vllm", "vllm.model_executor.models.minimax_m3", "MiniMaxM3DecoderLayer", "self_attn"),
-        ("vllm", "vllm.model_executor.models.minimax_vl", "MiniMaxTextDecoderLayer", "self_attn"),
-    ]
+    # 1. explicit override — the escape hatch for a new architecture.
+    explicit = (os.environ.get("BLACKFROST_RT_LAYER_CLASS", "") or cfg.get("layer_class", "")).strip()
+    if explicit:
+        cls = _import_layer_class(explicit)
+        if cls is not None:
+            return (pin or "explicit"), cls, surfaces
+        logger.warning(
+            "[rt-intervention] explicit layer_class %r did not import; falling back",
+            explicit,
+        )
+
+    # 2. known classes
+    candidates = list(_KNOWN_LAYER_CLASSES)
     if pin:
         candidates = [c for c in candidates if c[0] == pin] or candidates
 
-    for name, mod_path, cls_name, attn_attr in candidates:
+    for name, mod_path, cls_name, entry_surfaces in candidates:
         try:
             import importlib
 
@@ -336,7 +469,8 @@ def _resolve_backend():
         cls = getattr(mod, cls_name, None)
         if cls is None:
             continue
-        return name, cls, attn_attr
+        # An explicit `surfaces` in config wins over the per-entry default.
+        return name, cls, (surfaces if cfg.get("surfaces") else entry_surfaces)
     return None
 
 
@@ -405,14 +539,14 @@ def _install() -> None:
 
     # Patch the decoder-layer constructor so we catch the model whenever it is
     # actually built, regardless of import order.
-    backend = _resolve_backend()
+    backend = _resolve_backend(cfg)
     if backend is None:
         logger.warning(
             "[rt-intervention] no supported backend found (tried sglang, vllm). "
             "Hooks NOT installed."
         )
         return
-    backend_name, layer_cls, attn_attr = backend
+    backend_name, layer_cls, surfaces = backend
 
     orig_init = layer_cls.__init__
     if getattr(orig_init, "_blackfrost_patched", False):
@@ -425,20 +559,37 @@ def _install() -> None:
             return
         if int(lid) not in _DIRS:
             return
-        attn = getattr(self, attn_attr, None)
-        o_proj = getattr(attn, "o_proj", None) if attn is not None else None
-        if o_proj is None:
-            return
-        o_proj.register_forward_hook(_make_hook(int(lid)))
+        hit = False
+        for attn_attr, proj_attr in surfaces:
+            attn = getattr(self, attn_attr, None)
+            if attn is None:
+                continue
+            proj = getattr(attn, proj_attr, None)
+            if proj is None:
+                continue
+            proj.register_forward_hook(_make_hook(int(lid)))
+            hit = True
+        if not hit:
+            # A decoder layer with no matching projection means the surface list
+            # is wrong for this architecture. Warn once per layer id so a
+            # partially-bound install cannot pass silently.
+            logger.warning(
+                "[rt-intervention] layer %s bound 0 surfaces (looked for %s)",
+                lid, [f"{a}.{p}" for a, p in surfaces],
+            )
 
     patched_init._blackfrost_patched = True
     layer_cls.__init__ = patched_init
 
     _STATE["installed"] = True
     _STATE["backend"] = backend_name
+    _STATE["surfaces"] = [f"{a}.{p}" for a, p in surfaces]
+    _STATE["n_layers"] = max(dirs) + 1 if dirs else 0
     logger.warning(
-        "[rt-intervention] INSTALLED on %d layers via %s (alpha=%.3f, toggle=%s)",
-        len(dirs), backend_name, _STATE["alpha"], _STATE["toggle_path"] or "none",
+        "[rt-intervention] INSTALLED on %d layers via %s (surfaces=%s, alpha=%.3f, toggle=%s)",
+        len(dirs), backend_name,
+        ",".join(f"{a}.{p}" for a, p in surfaces),
+        _STATE["alpha"], _STATE["toggle_path"] or "none",
     )
 
 
