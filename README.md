@@ -291,6 +291,7 @@ Blackfrost_AI_MinimaxM31_RTI/
 ├── tests/
 │   └── test_rt_intervention.py ← 8 tests, CPU only, no checkpoint needed
 ├── docs/
+│   ├── CLOSEOUT-incomplete.md     ← status at close; release held
 │   ├── RUNBOOK-next-experiment.md ← how to resume: gates, sweep, stop rules
 │   └── METHOD-runtime-search.md   ← the general procedure, model-agnostic
 └── evidence/
@@ -302,6 +303,7 @@ Blackfrost_AI_MinimaxM31_RTI/
 
 | you want to | read |
 |---|---|
+| **know current status** | **`docs/CLOSEOUT-incomplete.md`** — closed INCOMPLETE, release held |
 | understand the mechanism | this file, §"What it actually does" |
 | wire it into a server | `AGENTS.md` |
 | **run the next experiment** | **`docs/RUNBOOK-next-experiment.md`** |
