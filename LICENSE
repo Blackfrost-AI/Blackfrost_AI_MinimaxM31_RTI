@@ -1,0 +1,17 @@
+Blackfrost AI — Proprietary
+
+Copyright (c) 2026 Blackfrost AI. All rights reserved.
+
+This package and the direction vectors it contains are proprietary and
+confidential. No permission is granted to copy, modify, distribute, sublicense,
+or use this material outside of an active agreement with Blackfrost AI, except
+for evaluation purposes by parties explicitly granted access to this repository.
+
+THE SOFTWARE AND DATA ARE PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
+
+This package is an inference-time intervention on a third-party model
+(MiniMaxAI/MiniMax-M3.1-Flash). That model remains subject to its own license;
+nothing here grants rights to it. Users are responsible for complying with the
+upstream model license and all applicable law.

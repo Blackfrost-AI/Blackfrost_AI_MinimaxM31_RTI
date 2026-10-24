@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# Model weights — never commit; rebuild from the source checkpoint
+*.safetensors
+*.bin
+*.pt
+*.pth
+*.gguf
+
+# Runtime artifacts
+*.log
+smoke50_*.jsonl
+smoke50_*.summary.json
+toggle_probe_*.json
+serve_rt.log
+
+# OS
+.DS_Store
+Thumbs.db

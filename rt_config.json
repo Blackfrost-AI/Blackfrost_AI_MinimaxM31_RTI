@@ -1,0 +1,16 @@
+{
+  "enabled": true,
+  "alpha": 1.4,
+  "directions": "banks/directions.npy",
+  "directions_sha256": "3b84104286223d99e6e385c1a010be9082adb5392edd8540b53998e48306dff3",
+  "layers": [
+    2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21,
+    22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39,
+    40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57,
+    58, 59
+  ],
+  "toggle_file": "rt/toggle.json",
+  "toggle_poll_seconds": 1.0,
+  "alpha_max": 1.7,
+  "note": "Activation-space equivalent of DWM alpha=1.4. Weights stay stock. Paths are relative to the repo root; use absolute paths if you launch from elsewhere."
+}
