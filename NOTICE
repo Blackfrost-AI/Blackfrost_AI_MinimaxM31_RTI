@@ -1,0 +1,18 @@
+Blackfrost AI — MiniMax-M3.1-Flash Runtime Intervention
+Copyright 2026 Blackfrost AI
+
+This product is an independent implementation of the refusal-direction
+intervention method described in:
+
+  Andy Arditi, Oscar Obeso, Aaquib Syed, Daniel Paleka, Nina Panickssery,
+  Wes Gurnee, and Neel Nanda. "Refusal in Language Models Is Mediated by a
+  Single Direction." NeurIPS 2024. arXiv:2406.11717.
+  https://github.com/andyrdt/refusal_direction
+
+The reference implementation is licensed under the Apache License, Version 2.0.
+No upstream source code is included in this package. Blackfrost AI implemented
+the runtime hook, direction-bank construction, evaluation harness, and
+packaging. This attribution does not imply endorsement by the paper authors.
+
+MiniMax-M3.1-Flash model weights are not included. The model remains subject
+to its own license.

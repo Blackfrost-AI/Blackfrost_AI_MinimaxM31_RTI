@@ -392,5 +392,16 @@ CPU only — no GPU, no checkpoint. Eight tests:
 
 ## License / provenance
 
-Blackfrost AI. Internally derived refusal directions — no third-party training
-data is redistributed here beyond the direction vectors themselves.
+This package is licensed under the Apache License, Version 2.0. See `LICENSE`.
+
+The runtime intervention is an independent Blackfrost AI implementation of the
+refusal-direction method described by Arditi et al., "Refusal in Language
+Models Is Mediated by a Single Direction" (NeurIPS 2024,
+[arXiv:2406.11717](https://arxiv.org/abs/2406.11717)). The reference
+implementation is [`andyrdt/refusal_direction`](https://github.com/andyrdt/refusal_direction)
+(Apache-2.0). No upstream source code is included; see `NOTICE` and
+`CREDITS.md`.
+
+The direction bank was fitted by Blackfrost AI from activations of
+MiniMax-M3.1-Flash. Model weights are not redistributed here. The model remains
+subject to its own license.
