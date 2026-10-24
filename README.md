@@ -140,8 +140,32 @@ export BLACKFROST_RT_INTERVENTION=$RTI_HOME/rt_config.json
 sglang serve \
   --model-path /path/to/MiniMax-M3.1-Flash \
   --served-model-name MiniMax-3.1-Flash-RTI \
-  --tp 4 --context-length 65536 \
+  --tp 4 --context-length 1048576 \
   --trust-remote-code --host 0.0.0.0 --port 30000
+```
+
+> **If sglang runs in Docker, this host-side form will not work.** `sglang` is
+> not on the host `PATH`; the server must be `docker exec`'d into the container
+> that owns the GPUs. Use `rt/serve_container.sh` for that case — it sets the
+> same `PYTHONPATH` / `BLACKFROST_RT_INTERVENTION` inside the container and
+> defaults to 1M context. Symptom of getting this wrong: the script prints its
+> banner, then exits with `exec: sglang: not found`, and no server ever binds.
+
+### Context length
+
+`--context-length` defaults to **1048576 (1M)** in both serve scripts; the
+checkpoint's `text_config.max_position_embeddings` is `1048576`. A 65536 cap
+silently truncates long work and surfaces in clients as:
+
+```
+max_completion_tokens is too large: 128000.
+This model supports at most 65536 completion tokens.
+```
+
+Confirm what is actually serving — do not infer it from the launch command:
+
+```bash
+curl -s localhost:30000/get_server_info | jq '.context_length'   # expect 1048576
 ```
 
 Confirm it bound before trusting traffic:
@@ -257,7 +281,8 @@ Blackfrost_AI_MinimaxM31_RTI/
 ├── rt/
 │   ├── rt_intervention.py     ← the hook installer
 │   ├── sitecustomize.py       ← PYTHONPATH bootstrap for worker processes
-│   ├── serve_rt.sh            ← reference launch script (sglang, tp=4)
+│   ├── serve_rt.sh            ← reference launch script (bare-metal sglang, tp=4)
+│   ├── serve_container.sh     ← Docker wrapper — use this when sglang is in a container
 │   ├── smoke50_rt.py          ← standalone smoke-50 refusal probe
 │   └── toggle.json            ← live on/off + α
 ├── banks/
@@ -330,6 +355,8 @@ CPU only — no GPU, no checkpoint. Eight tests:
 | toggle written, no behaviour change | check each TP rank logged a `toggle ->` line; verify the path in the log is the file you edited |
 | `fail-closed: hash mismatch` | bank was regenerated — update `directions_sha256` |
 | `ModuleNotFoundError: torch` | install deps: `pip install -r requirements.txt` |
+| `exec: sglang: not found` | sglang lives in a container — use `rt/serve_container.sh`, not `serve_rt.sh` |
+| client says "supports at most 65536 completion tokens" | server launched with a 64K cap; check `/get_server_info` → `context_length` |
 | `no supported backend found` | neither sglang nor vLLM importable; set `BLACKFROST_RT_BACKEND` |
 | shape error on load | bank must be `(59, 6144)`; hidden size must match the checkpoint |
 | response has empty `content` | **thinking model** — a small `max_tokens` is consumed by `reasoning_content` and the turn ends with `finish_reason: "length"`. Raise `max_tokens` (≥2000 for a short answer) or read `reasoning_content` too |
