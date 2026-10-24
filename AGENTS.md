@@ -47,6 +47,7 @@ Do these in order. Do not skip ahead.
         shape == (59, 6144) float32, unit-norm rows
 
 [ ] 2. Tests pass on target host
+        pip install -r requirements.txt
         cd tests && python test_rt_intervention.py    # 8/8, CPU only
 
 [ ] 3. Environment

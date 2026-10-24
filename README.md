@@ -253,6 +253,7 @@ Blackfrost_AI_MinimaxM31_RTI/
 ├── README.md                  ← you are here
 ├── AGENTS.md                  ← integration contract for agents
 ├── rt_config.json             ← static config (α, layers, paths)
+├── requirements.txt           ← torch + numpy (+ pytest for the suite)
 ├── rt/
 │   ├── rt_intervention.py     ← the hook installer
 │   ├── sitecustomize.py       ← PYTHONPATH bootstrap for worker processes
@@ -291,8 +292,18 @@ bank, update `directions_sha256` in `rt_config.json`.
 
 ## Tests
 
+Requires `torch` and `numpy` only. On a clean machine:
+
 ```bash
-cd tests && python test_rt_intervention.py
+python3 -m venv .venv && . .venv/bin/activate
+pip install -r requirements.txt           # CPU wheel of torch is enough
+```
+
+Then, either runner works:
+
+```bash
+python -m pytest tests/test_rt_intervention.py -v   # 8 passed
+cd tests && python test_rt_intervention.py          # ALL TESTS PASSED
 ```
 
 CPU only — no GPU, no checkpoint. Eight tests:
@@ -318,6 +329,7 @@ CPU only — no GPU, no checkpoint. Eight tests:
 | `INSTALLED` but output identical to stock | toggle has `enabled:false` or `alpha:0.0` |
 | toggle written, no behaviour change | check each TP rank logged a `toggle ->` line; verify the path in the log is the file you edited |
 | `fail-closed: hash mismatch` | bank was regenerated — update `directions_sha256` |
+| `ModuleNotFoundError: torch` | install deps: `pip install -r requirements.txt` |
 | `no supported backend found` | neither sglang nor vLLM importable; set `BLACKFROST_RT_BACKEND` |
 | shape error on load | bank must be `(59, 6144)`; hidden size must match the checkpoint |
 | response has empty `content` | **thinking model** — a small `max_tokens` is consumed by `reasoning_content` and the turn ends with `finish_reason: "length"`. Raise `max_tokens` (≥2000 for a short answer) or read `reasoning_content` too |

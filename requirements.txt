@@ -1,0 +1,10 @@
+# Runtime intervention — Python dependencies.
+#
+# The hook itself needs only torch + numpy. Install a build matching the CUDA
+# stack of the inference host (sglang/vLLM image already ships one; do not
+# reinstall torch inside that image).
+torch>=2.4
+numpy>=1.26
+
+# Tests only (CPU wheel of torch is sufficient — no GPU, no checkpoint).
+pytest>=8.0
