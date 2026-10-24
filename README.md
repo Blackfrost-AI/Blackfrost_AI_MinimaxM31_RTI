@@ -290,10 +290,23 @@ Blackfrost_AI_MinimaxM31_RTI/
 │   └── manifest.json          ← provenance + hashes
 ├── tests/
 │   └── test_rt_intervention.py ← 8 tests, CPU only, no checkpoint needed
+├── docs/
+│   ├── RUNBOOK-next-experiment.md ← how to resume: gates, sweep, stop rules
+│   └── METHOD-runtime-search.md   ← the general procedure, model-agnostic
 └── evidence/
     ├── POC-RESULT.md          ← full result write-up
     └── judged_verdicts_*.json ← per-item verdicts
 ```
+
+### Where to go next
+
+| you want to | read |
+|---|---|
+| understand the mechanism | this file, §"What it actually does" |
+| wire it into a server | `AGENTS.md` |
+| **run the next experiment** | **`docs/RUNBOOK-next-experiment.md`** |
+| apply this to another model | `docs/METHOD-runtime-search.md` |
+| see what was proven | `evidence/POC-RESULT.md` |
 
 ### The bank
 

@@ -35,7 +35,7 @@ Exact match on refusal count. 22 points below stock.
 | `rt_intervention.py` | see `MANIFEST.sha256` | Hook installer |
 | `sitecustomize.py` | see `MANIFEST.sha256` | PYTHONPATH bootstrap |
 | `serve_rt.sh` | see `MANIFEST.sha256` | Launch script |
-| `test_rt_intervention.py` | see `MANIFEST.sha256` | 7 CPU tests |
+| `test_rt_intervention.py` | see `MANIFEST.sha256` | 8 CPU tests |
 | `smoke50_rt.py` | see `MANIFEST.sha256` | Standalone smoke-50 |
 | `toggle_probe.py` | see `MANIFEST.sha256` | Live A/B toggle proof |
 | `README.md` | — | Full report |
@@ -92,6 +92,12 @@ Exact match on refusal count. 22 points below stock.
 ---
 
 ## Next step (operator decision)
+
+> **Superseded — see [`docs/RUNBOOK-next-experiment.md`](RUNBOOK-next-experiment.md).**
+> The list below is kept as the historical record of what the POC session
+> proposed. Two items in it were later characterised: the α-ramp is no longer
+> unmeasured at 1.5–1.7 (those degrade), and 1.2 remains the real gap. The
+> runbook is authoritative.
 
 The POC answers the question it was asked. Natural follow-ups, in order of value:
 
